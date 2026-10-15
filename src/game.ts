@@ -1,117 +1,292 @@
-// Deepcore — the game. THIS IS THE FILE YOU IMPLEMENT.
-//
-// `src/main.ts`, `src/constants.ts` and the project's configuration are supplied
-// with the project and stay as they are. What is missing is the game: the state
-// it holds, the debug surface that poses and reads that state, and the three
-// functions below.
-//
-// FIRST, DECLARE AND EXPORT `DeepcoreState`, the whole authoritative state the
-// specification's rules require of the game, and `DeepcoreDebugApi`, the debug
-// and automation surface `specs/instrumentation.md` specifies. The stub below is
-// written against both names, so this project does not compile until they exist
-// — the type check failing on a freshly seeded workspace is the starting point,
-// not a broken seed.
-//
-// THEN IMPLEMENT the three functions. `initialize` runs once, when the engine is
-// initialized, and returns the state and the debug surface together, as the pair
-// `[state, debug]`. `update` and `render` then run once each per frame — `update`
-// first, with the frame's delta time in SECONDS, then `render`.
-//
-// The state is a VALUE, and every frame is a transition over it. The engine hands
-// `update` the current state as a read-only view (`DeepReadonly<DeepcoreState>`)
-// and stores whatever `update` returns as the next state; `render` is handed
-// that next state, as the same read-only view, and returns nothing. Nothing ever
-// holds a writable `DeepcoreState`: `update` builds the next state from the
-// current one (spread the parts that change, `map` over the arrays) rather than
-// assigning into it, and a frame that returns `undefined` is refused by the
-// engine. The engine's own documentation, seeded at `engine/`, defines all of
-// this and the scoped APIs each function receives; read it before you start.
-//
-// The engine returns the surface from `engine.debug`, exactly as `initialize`
-// handed it over, which is how the game is driven from code
-// (`specs/instrumentation.md`). Because no one holds a writable state, the
-// surface is written in the shape of `update`: a pose or a control takes the
-// current state and returns the next (`setFuel(state, 40)`), a reading takes the
-// state and returns what it read (`snapshot(state)`), and a caller drives them
-// through `engine.apply` and `engine.state`. Where its implementation lives under
-// `src/` is your call; the only fixed point is that `initialize` returns it.
-//
-// THE CAMERA IS YOURS. The mine is far wider and far deeper than the stage, and
-// this engine draws nothing and holds no camera: it hands `render` a 2D context
-// covering the logical stage. Deepcore scrolls that view over the world itself,
-// as its own transform on the context, and `specs/world.md` states where the
-// camera sits each frame and how its lead builds and unwinds.
+import type { Game, InitApi, UpdateApi } from "@clockwyrks/simple-2d";
+import type { ParticleSystem } from "@clockwyrks/particle-runtime";
+import * as C from "./constants";
+import {
+  type DeepcoreState,
+  type ReadState,
+  type Assets,
+  copy,
+  initial,
+  effect,
+  buildings,
+  tile,
+  snapshot,
+} from "./model";
+import { debug, type DeepcoreDebugApi } from "./debug";
+import { hasSave, simulate, checkDeath, useItem, jettison } from "./rules";
+import { render } from "./render";
+import {
+  menuItems,
+  menuRect,
+  controls,
+  contains,
+  choose,
+  back,
+  act,
+  activateBuilding,
+  buildingAt,
+} from "./interface";
+export type { DeepcoreState } from "./model";
+export type { DeepcoreDebugApi } from "./debug";
+export const BACKGROUND = "#0b1822";
 
-import type {
-  Game,
-  InitApi,
-  RenderApi,
-  UpdateApi,
-} from "@clockwyrks/simple-2d";
-import type { DeepReadonly } from "ts-essentials";
-
-/**
- * The stage background, a CSS color string. `src/main.ts` hands it to the engine
- * as the color the canvas is cleared to each frame, so the letterbox bars around
- * the stage match the mine itself. This placeholder is replaced by the build with
- * the color its stage uses.
- */
-export const BACKGROUND = "#000";
-
-const NOT_IMPLEMENTED = "Deepcore: src/game.ts is not implemented yet";
-
-/**
- * The game this build's engine drives.
- *
- * Implement all three functions. Nothing else in the project needs changing for
- * the game to run: `src/main.ts` already binds this object to the engine.
- */
+const urls = import.meta.glob<string>(
+  "../assets/{miner,tiles,hazards,ore,materials,surface,rocket,icons,fx,audio}/**/*.{png,json,wav}",
+  { eager: true, query: "?url&no-inline", import: "default" },
+);
+export async function loadAssets(api: InitApi<DeepcoreState>): Promise<Assets> {
+  const assets: Assets = { images: {}, systems: {} };
+  await Promise.all(
+    Object.entries(urls).map(async ([key, url]) => {
+      const name = key.replace("../assets/", "");
+      // Both Vite's dev URL and its relative production URL resolve under the
+      // engine's fixed assets root. Never fetch or decode beside the engine.
+      const path = url.replace(/^\.?\/?assets\//, "");
+      if (name.endsWith(".png"))
+        assets.images[name] = await api.assets.loadImage(path);
+      else if (name.endsWith(".json"))
+        assets.systems[name.split("/").pop()!.replace(".json", "")] =
+          JSON.parse(
+            await (await api.assets.load(path)).text(),
+          ) as ParticleSystem;
+      else
+        await api.audio.load(name.split("/").pop()!.replace(".wav", ""), path);
+    }),
+  );
+  return assets;
+}
+function targetAt(s: ReadState, x: number, y: number): string | null {
+  if (s.screen !== "in-mine")
+    for (let i = 0; i < menuItems(s).length; i++) {
+      const r = menuRect(s, i);
+      if (r && contains(r, x, y)) return `menu:${i}`;
+    }
+  else {
+    for (const c of controls(s))
+      if (c.enabled && contains(c.rect, x, y))
+        return `control:${c.id}:${c.subject ?? ""}`;
+    if (!s.panel)
+      for (const b of buildings)
+        if (
+          contains(
+            {
+              x: b.x - s.camera.x,
+              y: b.y - s.camera.y + C.HUD_H,
+              w: b.w,
+              h: b.h,
+            },
+            x,
+            y,
+          )
+        )
+          return `building:${b.id}`;
+  }
+  return null;
+}
+export function update(
+  state: ReadState,
+  api: UpdateApi,
+  dt: number,
+): DeepcoreState {
+  let s = copy(state);
+  s.simTime += dt;
+  const visualDt = s.screen === "paused" ? 0 : dt;
+  s.effects = s.effects
+    .map((e) => ({ ...e, age: e.age + visualDt }))
+    .filter((e) => {
+      const emitters = s.assets.systems[e.name]?.emitters;
+      const lifetime = emitters
+        ? Math.max(
+            ...emitters.map(
+              (em) =>
+                (em.lifetimeMs +
+                  (em.lifetimeSpread ?? 0) +
+                  (em.emission.mode === "burst" ? em.emission.atMs : 0)) /
+                1000,
+            ),
+          )
+        : 2.3;
+      return e.age < lifetime;
+    });
+  s.shake = Math.max(0, s.shake - visualDt * 18);
+  s.noteTime = Math.max(0, s.noteTime - visualDt);
+  if (s.launchTime !== null) {
+    s.launchTime += dt;
+    if (
+      s.launchTime < 2.5 &&
+      Math.floor(s.launchTime * 12) !== Math.floor((s.launchTime - dt) * 12)
+    )
+      effect(
+        s,
+        "launch-exhaust",
+        buildings[5].x + 154,
+        C.SURFACE_Y - s.launchTime ** 2 * 90,
+      );
+  }
+  checkDeath(s);
+  if (s.screen === "game-over") s.animationTime += dt;
+  if (api.input.pressed("mute")) api.audio.setMuted(!api.audio.muted());
+  s.muted = api.audio.muted();
+  let confirm = api.input.pressed("activate");
+  const up = api.input.pressed("up"),
+    down = api.input.pressed("down");
+  if (api.input.pressed("pause")) s = back(s);
+  for (const sample of api.input.pointerSamples()) {
+    const target = targetAt(s, sample.x, sample.y);
+    if (target?.startsWith("menu:")) s.menuIndex = Number(target.split(":")[1]);
+    if (target?.startsWith("control:")) {
+      const panelControls = controls(s).filter(
+        (c) => !["inventory", "pause", "mute", "dismiss-notice"].includes(c.id),
+      );
+      const index = panelControls.findIndex(
+        (c) => `control:${c.id}:${c.subject ?? ""}` === target,
+      );
+      if (index >= 0) s.panelIndex = index;
+    }
+    if (sample.type === "down") {
+      if (target) s.pointerDown[sample.id] = target;
+      else delete s.pointerDown[sample.id];
+      if (target === "control:dismiss-notice:") s.notice = null;
+    }
+    if (sample.type === "up") {
+      if (target && s.pointerDown[sample.id] === target) {
+        const [kind, id, subject] = target.split(":");
+        if (kind === "menu") confirm = true;
+        else if (kind === "control") {
+          s = act(s, id, subject || null);
+          if (id === "mute") api.audio.setMuted(s.muted);
+        } else if (kind === "building") activateBuilding(s, id as C.BuildingId);
+      }
+      delete s.pointerDown[sample.id];
+    }
+  }
+  if (s.screen !== "in-mine") {
+    const count = menuItems(s).length;
+    if (count && (up || down))
+      s.menuIndex = (s.menuIndex + (down ? 1 : -1) + count) % count;
+    if (confirm) s = choose(s);
+  } else {
+    if (api.input.pressed("inventory")) s = act(s, "inventory", null);
+    if (api.input.pressed("jettison")) jettison(s);
+    C.ITEM_IDS.forEach((id, i) => {
+      if (api.input.pressed(`supply${i + 1}`)) useItem(s, id);
+    });
+    if (s.panel) {
+      const list = controls(s).filter(
+        (c) => !["inventory", "pause", "mute", "dismiss-notice"].includes(c.id),
+      );
+      if (list.length) {
+        if (up || down)
+          s.panelIndex =
+            (s.panelIndex + (down ? 1 : -1) + list.length) % list.length;
+        if (confirm) {
+          const c = list[s.panelIndex];
+          if (c?.enabled) s = act(s, c.id, c.subject);
+        }
+      }
+    } else if (confirm) {
+      const b = buildingAt(s);
+      if (b) activateBuilding(s, b.id);
+    }
+    const h = {
+      left: api.input.value("left"),
+      right: api.input.value("right"),
+      down: api.input.value("down"),
+      up: api.input.value("up"),
+    };
+    // A fixed render-free integrator makes cadence, burn, and timers independent
+    // of display rate. The remainder is part of the authoritative state.
+    s.accumulator += dt;
+    const step = 1 / 120;
+    while (s.accumulator + 1e-10 >= step) {
+      s.accumulator -= step;
+      simulate(s, h, step);
+    }
+    checkDeath(s);
+    const first = Math.max(1, Math.floor(s.camera.y / C.TILE)),
+      last = Math.min(s.coreRow, Math.ceil((s.camera.y + C.VIEW_H) / C.TILE));
+    if (!s.panel)
+      for (let r = first; r <= last; r++)
+        for (
+          let c = Math.max(1, Math.floor(s.camera.x / C.TILE));
+          c <
+          Math.min(
+            C.WORLD_COLS - 1,
+            Math.ceil((s.camera.x + C.VIEW_W) / C.TILE),
+          );
+          c++
+        )
+          if (tile(s, c, r).kind === "gas") {
+            const offset = ((c * 13 + r * 7) % 20) / 10;
+            if (
+              Math.floor((s.simTime + offset) / C.GAS_SEEP_PERIOD) !==
+              Math.floor((s.simTime - dt + offset) / C.GAS_SEEP_PERIOD)
+            )
+              effect(s, "gas-seep", (c + 0.5) * C.TILE, (r + 0.5) * C.TILE);
+          }
+  }
+  api.audio.loop(C.CUES.music);
+  const live = s.screen === "in-mine" && !s.panel;
+  for (const [cue, active] of [
+    [C.CUES.drill, live && !!s.miner.drilling],
+    [C.CUES.thrust, live && s.miner.state === "jetpack"],
+    [
+      C.CUES.alarmFuel,
+      s.screen === "in-mine" &&
+        s.miner.fuel < C.LOW_FUEL_FRACTION * C.FUEL_TIERS[s.tiers.fuel - 1],
+    ],
+  ] as const) {
+    if (active) api.audio.loop(cue);
+    else api.audio.stop(cue);
+  }
+  if (s.screen === "in-mine" && s.coreTimer !== null) {
+    const period = s.coreTimer < 15 ? 0.25 : s.coreTimer < 40 ? 0.5 : 1;
+    if (
+      Math.floor(s.simTime / period) !== Math.floor((s.simTime - dt) / period)
+    )
+      api.audio.play(C.CUES.alarmCore);
+  }
+  for (const cue of s.cues) api.audio.play(cue);
+  s.cues = [];
+  s.muted = api.audio.muted();
+  return s;
+}
 export const game: Game<DeepcoreState, DeepcoreDebugApi> = {
-  /**
-   * Runs once, before any frame.
-   *
-   * Register every action in ACTIONS against the codes bound to it, define the
-   * thirteen CUES over the produced `.wav` files, load the produced sprites,
-   * animation frames, and particle systems specs/assets.md fixes, register the
-   * diagnostic sources specs/instrumentation.md lists — each is handed the state
-   * current at the read, so none closes over the state built here — and build the
-   * complete initial state: the title screen, with every field of DeepcoreState
-   * set, including the fields an expedition in progress would use, at the resting
-   * values `reset` restores. Return it beside the debug surface.
-   */
-  initialize(_api: InitApi<DeepcoreState>): [DeepcoreState, DeepcoreDebugApi] {
-    throw new Error(NOT_IMPLEMENTED);
+  async initialize(api) {
+    for (const [name, keys] of Object.entries(C.ACTIONS))
+      api.input.register(name, { keys: [...keys] });
+    const assets = await loadAssets(api);
+    const s = initial(assets, false, hasSave());
+    const readings = [
+      "screen",
+      "panel",
+      "mode",
+      "worldSize",
+      "miner",
+      "cargo",
+      "satchel",
+      "tiers",
+      "credits",
+      "depthMeters",
+      "coreTimer",
+      "scanner",
+    ] as const;
+    for (const key of readings)
+      api.diagnostics.register(key, (state) => {
+        const value = snapshot(state)[key];
+        if (key === "miner") {
+          const m = snapshot(state).miner;
+          return `${m.x.toFixed(0)},${m.y.toFixed(0)} v${m.vx.toFixed(0)},${m.vy.toFixed(0)} ${m.state} ${m.facing} ground:${m.grounded} F:${m.fuel.toFixed(1)}/${m.maxFuel} H:${m.hull.toFixed(1)}/${m.maxHull}`;
+        }
+        return typeof value === "object"
+          ? JSON.stringify(value)
+          : (value ?? "-");
+      });
+    api.diagnostics.register("drilling", (state) =>
+      JSON.stringify(snapshot(state).miner.drilling),
+    );
+    return [s, debug];
   },
-
-  /**
-   * Runs once per frame, before `render`: the next state, from the current one.
-   *
-   * `dt` is the real elapsed SECONDS of this frame, and `simTime` accumulates it
-   * on every update whatever the screen. Read the frame's actions and the
-   * pointer, run the miner's movement, drilling, fuel and hull against `dt`,
-   * resolve the hazards, the economy, the Core Sample's timer and the camera's
-   * lead, play cues, and mirror the engine's mute bit into the returned state's
-   * `muted`. The value returned is what `render` draws and what the next `update`
-   * receives; `state` itself is read-only and stays as it was.
-   */
-  update(
-    _state: DeepReadonly<DeepcoreState>,
-    _api: UpdateApi,
-    _dt: number,
-  ): DeepcoreState {
-    throw new Error(NOT_IMPLEMENTED);
-  },
-
-  /**
-   * Runs once per frame, after `update`, with the state `update` returned.
-   *
-   * `api.ctx` arrives cleared and already carrying the logical transform, so draw
-   * in 1280x720 coordinates and never read the canvas element's size. The status
-   * bar is drawn in that space directly; the mine is drawn under the camera's own
-   * transform, which this function applies and unwinds. The state arrives
-   * read-only, so the type is what guarantees that rendering changes nothing.
-   */
-  render(_state: DeepReadonly<DeepcoreState>, _api: RenderApi): void {
-    throw new Error(NOT_IMPLEMENTED);
-  },
+  update,
+  render,
 };

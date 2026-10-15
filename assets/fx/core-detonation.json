@@ -1,0 +1,131 @@
+{
+  "dimensions": 2,
+  "field": {
+    "width": 480,
+    "height": 480
+  },
+  "durationMs": 2200,
+  "fps": 24,
+  "loop": false,
+  "emitters": [
+    {
+      "name": "body",
+      "shape": "disc",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "extent": {
+        "radius": 12.0,
+        "size": [
+          1.0,
+          1.0,
+          0.0
+        ]
+      },
+      "emission": {
+        "mode": "burst",
+        "count": 200,
+        "atMs": 0.0
+      },
+      "lifetimeMs": 2000.0,
+      "lifetimeSpread": 666.0,
+      "speed": 340.0,
+      "speedSpread": 170.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "coneAngle": 180.0,
+      "forces": {},
+      "particle": {
+        "sizeCurve": {
+          "interp": "linear",
+          "from": 2.3,
+          "to": 0.46
+        },
+        "opacityCurve": {
+          "interp": "linear",
+          "from": 0.85,
+          "to": 0.0
+        },
+        "colorGradient": [
+          {
+            "color": "#ffc7a0",
+            "at": 0.0
+          },
+          {
+            "color": "#ef6048",
+            "at": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "shock",
+      "shape": "disc",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "extent": {
+        "radius": 2.0,
+        "size": [
+          1.0,
+          1.0,
+          0.0
+        ]
+      },
+      "emission": {
+        "mode": "burst",
+        "count": 80,
+        "atMs": 0.0
+      },
+      "lifetimeMs": 350.0,
+      "lifetimeSpread": 0.0,
+      "speed": 350.0,
+      "speedSpread": 0.0,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "coneAngle": 180.0,
+      "forces": {},
+      "particle": {
+        "sizeCurve": {
+          "interp": "linear",
+          "from": 0.45,
+          "to": 0.05
+        },
+        "opacityCurve": {
+          "interp": "linear",
+          "from": 1.0,
+          "to": 0.0
+        },
+        "colorGradient": [
+          {
+            "color": "#fff4cd",
+            "at": 0.0
+          },
+          {
+            "color": "#ffbd79",
+            "at": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "forces": {
+    "gravity": -35.0,
+    "drag": 0.8,
+    "turbulence": {
+      "amplitude": 8.0,
+      "scale": 0.05
+    }
+  },
+  "subEmitters": []
+}

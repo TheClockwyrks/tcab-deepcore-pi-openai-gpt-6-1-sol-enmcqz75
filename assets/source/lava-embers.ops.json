@@ -1,0 +1,74 @@
+[
+  {
+    "op": "add_emitter",
+    "def": {
+      "name": "body",
+      "shape": "disc",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "extent": {
+        "radius": 12.0,
+        "size": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "emission": {
+        "mode": "burst",
+        "count": 20,
+        "atMs": 0.0
+      },
+      "lifetimeMs": 850.0,
+      "lifetimeSpread": 283.0,
+      "speed": 75.0,
+      "speedSpread": 37.5,
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "coneAngle": 180.0
+    }
+  },
+  {
+    "op": "set_particle",
+    "emitter": "body",
+    "particle": {
+      "sizeCurve": {
+        "interp": "linear",
+        "from": 0.6,
+        "to": 0.12
+      },
+      "opacityCurve": {
+        "interp": "linear",
+        "from": 0.85,
+        "to": 0.0
+      },
+      "colorGradient": [
+        {
+          "color": "#ff985e",
+          "at": 0.0
+        },
+        {
+          "color": "#ff985e",
+          "at": 1.0
+        }
+      ]
+    }
+  },
+  {
+    "op": "set_forces",
+    "forces": {
+      "gravity": -35.0,
+      "drag": 0.8,
+      "turbulence": {
+        "amplitude": 8.0,
+        "scale": 0.05
+      }
+    }
+  }
+]
